@@ -1,171 +1,31 @@
 <?php
 // edit_parking_modal.php
+include 'includes/config.php';
 
-// Check if this is an AJAX request for modal content
-$is_ajax_request = isset($_GET['ajax']) && $_GET['ajax'] == '1';
+// Define upload directory
+$upload_dir = __DIR__ . '/uploads/parking_spaces/';
 
-// Only include config and process data if this is an AJAX request
-if ($is_ajax_request) {
-    include 'includes/config.php';
-    
-    // Define upload directory
-    $upload_dir = __DIR__ . '/uploads/parking_spaces/';
-    
-    // Create upload directory if it doesn't exist
-    if (!file_exists($upload_dir)) {
-        mkdir($upload_dir, 0777, true);
-    }
-    
-    // Fetch parking space details
-    $parking_id = $_GET['parking_id'] ?? null;
-    $parking_details = null;
-    
-    if ($parking_id) {
-        try {
-            $stmt = $pdo->prepare("
-                SELECT ps.*, po.firstname, po.lastname, po.email 
-                FROM parking_spaces ps 
-                LEFT JOIN parking_owners po ON ps.partner_id = po.id 
-                WHERE ps.id = ?
-            ");
-            $stmt->execute([$parking_id]);
-            $parking_details = $stmt->fetch(PDO::FETCH_ASSOC);
-        } catch (PDOException $e) {
-            $error_message = "Error fetching parking details: " . $e->getMessage();
-        }
-    }
-    
-    // Handle form submission
-    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['parking_id'])) {
-        try {
-            $parking_id = $_POST['parking_id'];
-            $address = $_POST['address'];
-            $latitude = $_POST['latitude'];
-            $longitude = $_POST['longitude'];
-            
-            // Get existing parking details first
-            $stmt = $pdo->prepare("SELECT * FROM parking_spaces WHERE id = ?");
-            $stmt->execute([$parking_id]);
-            $existing_parking = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$existing_parking) {
-                throw new Exception("Parking space not found");
-            }
-            
-            // Decode existing data
-            $existing_vehicle_types = json_decode($existing_parking['vehicle_types'], true);
-            $existing_floors = json_decode($existing_parking['floors'], true);
-            $existing_floor_capacity = json_decode($existing_parking['floor_capacity'], true);
-            $existing_available_per_floor = json_decode($existing_parking['available_per_floor'], true);
-            $existing_occupied_slots = json_decode($existing_parking['occupied_slots'], true);
-            
-            // Process additional capacity
-            $additional_capacity = [];
-            $total_additional_spaces = 0;
-            
-            $floor_configs = [
-                'ground' => 'Ground',
-                'second' => '2nd Floor', 
-                'third' => '3rd Floor'
-            ];
-            
-            foreach ($floor_configs as $floor_key => $floor_name) {
-                if (isset($_POST["{$floor_key}_floor"])) {
-                    $car_capacity = intval($_POST["{$floor_key}_car"] ?? 0);
-                    $motorcycle_capacity = intval($_POST["{$floor_key}_motorcycle"] ?? 0);
-                    $mini_truck_capacity = intval($_POST["{$floor_key}_mini_truck"] ?? 0);
-                    
-                    $additional_capacity[$floor_name] = [
-                        "Car" => $car_capacity,
-                        "Motorcycle" => $motorcycle_capacity,
-                        "Mini Truck" => $mini_truck_capacity
-                    ];
-                    
-                    $total_additional_spaces += $car_capacity + $motorcycle_capacity + $mini_truck_capacity;
-                }
-            }
-            
-            // Update floor capacities and available spaces
-            $updated_floor_capacity = $existing_floor_capacity;
-            $updated_available_per_floor = $existing_available_per_floor;
-            $updated_vehicle_types = $existing_vehicle_types;
-            
-            foreach ($additional_capacity as $floor_name => $capacities) {
-                foreach ($capacities as $vehicle_type => $additional_capacity_value) {
-                    if ($additional_capacity_value > 0) {
-                        // Update floor capacity
-                        $updated_floor_capacity[$floor_name][$vehicle_type] = 
-                            ($updated_floor_capacity[$floor_name][$vehicle_type] ?? 0) + $additional_capacity_value;
-                        
-                        // Update available per floor
-                        $updated_available_per_floor[$floor_name][$vehicle_type] = 
-                            ($updated_available_per_floor[$floor_name][$vehicle_type] ?? 0) + $additional_capacity_value;
-                        
-                        // Update vehicle types total
-                        $updated_vehicle_types[$vehicle_type]['total'] += $additional_capacity_value;
-                        $updated_vehicle_types[$vehicle_type]['available'] += $additional_capacity_value;
-                    }
-                }
-            }
-            
-            // Calculate new totals
-            $new_total_spaces = $existing_parking['total_spaces'] + $total_additional_spaces;
-            $new_available_spaces = $existing_parking['available_spaces'] + $total_additional_spaces;
-            
-            // Handle image upload
-            $image_url = $existing_parking['image_url'];
-            
-            if (isset($_FILES['image']) && $_FILES['image']['error'] === UPLOAD_ERR_OK) {
-                $image_file = $_FILES['image'];
-                $file_extension = pathinfo($image_file['name'], PATHINFO_EXTENSION);
-                $allowed_extensions = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
-                
-                // Validate file type
-                if (in_array(strtolower($file_extension), $allowed_extensions)) {
-                    // Generate unique filename
-                    $filename = 'parking_' . time() . '_' . uniqid() . '.' . $file_extension;
-                    $target_path = $upload_dir . $filename;
-                    
-                    // Move uploaded file
-                    if (move_uploaded_file($image_file['tmp_name'], $target_path)) {
-                        // Delete old image if it's not the default
-                        if ($image_url !== 'uploads/parking_spaces/default_parking.jpg' && file_exists(__DIR__ . '/' . $image_url)) {
-                            unlink(__DIR__ . '/' . $image_url);
-                        }
-                        $image_url = 'uploads/parking_spaces/' . $filename;
-                    } else {
-                        throw new Exception("Failed to upload image file.");
-                    }
-                } else {
-                    throw new Exception("Invalid file type. Only JPG, JPEG, PNG, GIF, and WEBP are allowed.");
-                }
-            }
-            
-            // Update database
-            $sql = "UPDATE parking_spaces 
-                    SET address = ?, latitude = ?, longitude = ?, 
-                        total_spaces = ?, available_spaces = ?,
-                        vehicle_types = ?, floor_capacity = ?, available_per_floor = ?,
-                        image_url = ?
-                    WHERE id = ?";
-            
-            $stmt = $pdo->prepare($sql);
-            $stmt->execute([
-                $address, $latitude, $longitude,
-                $new_total_spaces, $new_available_spaces,
-                json_encode($updated_vehicle_types), 
-                json_encode($updated_floor_capacity), 
-                json_encode($updated_available_per_floor),
-                $image_url,
-                $parking_id
-            ]);
-            
-            $success_message = "Parking space updated successfully!";
-            echo '<script>setTimeout(() => { closeEditParkingModal(); window.location.reload(); }, 2000);</script>';
-            
-        } catch (Exception $e) {
-            $error_message = "Error: " . $e->getMessage();
-        }
+// Create upload directory if it doesn't exist
+if (!file_exists($upload_dir)) {
+    mkdir($upload_dir, 0777, true);
+}
+
+// Fetch parking space details
+$parking_id = $_GET['parking_id'] ?? null;
+$parking_details = null;
+
+if ($parking_id) {
+    try {
+        $stmt = $pdo->prepare("
+            SELECT ps.*, po.firstname, po.lastname, po.email 
+            FROM parking_spaces ps 
+            LEFT JOIN parking_owners po ON ps.partner_id = po.id 
+            WHERE ps.id = ?
+        ");
+        $stmt->execute([$parking_id]);
+        $parking_details = $stmt->fetch(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        $error_message = "Error fetching parking details: " . $e->getMessage();
     }
 }
 ?>
@@ -176,27 +36,14 @@ if ($is_ajax_request) {
         <!-- Modal Header -->
         <div class="flex justify-between items-center pb-3 border-b sticky top-0 bg-white z-10">
             <h3 class="text-xl font-bold text-gray-800">Edit Parking Space</h3>
-            <button onclick="closeEditParkingModal()" class="text-gray-400 hover:text-gray-600">
+            <button type="button" onclick="closeEditParkingModal()" class="text-gray-400 hover:text-gray-600">
                 <i class="fas fa-times text-2xl"></i>
             </button>
         </div>
 
-        <!-- Success/Error Messages -->
-        <?php if (isset($success_message)): ?>
-            <div class="mt-4 p-3 bg-green-100 text-green-700 rounded-md">
-                <?= htmlspecialchars($success_message) ?>
-            </div>
-        <?php endif; ?>
-        
-        <?php if (isset($error_message)): ?>
-            <div class="mt-4 p-3 bg-red-100 text-red-700 rounded-md">
-                <?= htmlspecialchars($error_message) ?>
-            </div>
-        <?php endif; ?>
-
         <!-- Modal Body -->
         <?php if ($parking_details): ?>
-        <form id="editParkingForm" method="POST" enctype="multipart/form-data" class="mt-4 space-y-6">
+        <form id="editParkingForm" method="POST" action="update_parking.php" enctype="multipart/form-data" class="mt-4 space-y-6">
             <input type="hidden" name="parking_id" value="<?= $parking_details['id'] ?>">
             
             <!-- Basic Information -->
@@ -299,83 +146,42 @@ if ($is_ajax_request) {
                         <h4 class="text-lg font-semibold text-gray-800 mb-3">Add Additional Capacity</h4>
                         <p class="text-sm text-gray-600 mb-3">Add more parking slots to existing floors:</p>
                         
-                        <!-- Ground Floor -->
+                        <?php
+                        $existing_floors = json_decode($parking_details['floors'], true);
+                        $floor_configs = [
+                            'ground' => 'Ground',
+                            'second' => '2nd Floor', 
+                            'third' => '3rd Floor'
+                        ];
+                        
+                        foreach ($floor_configs as $floor_key => $floor_name): 
+                            if (in_array($floor_name, $existing_floors)): 
+                        ?>
                         <div class="floor-section mb-4 p-3 border rounded-md">
                             <div class="flex items-center mb-2">
-                                <input type="checkbox" name="ground_floor" id="edit_ground_floor" 
+                                <input type="checkbox" name="<?= $floor_key ?>_floor" id="edit_<?= $floor_key ?>_floor" 
                                        class="rounded border-gray-300 text-red-600 focus:ring-red-500 mr-2">
-                                <label for="edit_ground_floor" class="font-medium text-gray-700">Ground Floor</label>
+                                <label for="edit_<?= $floor_key ?>_floor" class="font-medium text-gray-700"><?= $floor_name ?></label>
                             </div>
                             <div class="grid grid-cols-3 gap-2 ml-4">
                                 <div>
                                     <label class="block text-xs text-gray-600 mb-1">Additional Car Slots</label>
-                                    <input type="number" name="ground_car" value="0" min="0" 
+                                    <input type="number" name="<?= $floor_key ?>_car" value="0" min="0" 
                                            class="w-full px-2 py-1 border border-gray-300 rounded-md text-sm edit-floor-capacity" disabled>
                                 </div>
                                 <div>
                                     <label class="block text-xs text-gray-600 mb-1">Additional Motorcycle Slots</label>
-                                    <input type="number" name="ground_motorcycle" value="0" min="0"
+                                    <input type="number" name="<?= $floor_key ?>_motorcycle" value="0" min="0"
                                            class="w-full px-2 py-1 border border-gray-300 rounded-md text-sm edit-floor-capacity" disabled>
                                 </div>
                                 <div>
                                     <label class="block text-xs text-gray-600 mb-1">Additional Mini Truck Slots</label>
-                                    <input type="number" name="ground_mini_truck" value="0" min="0"
+                                    <input type="number" name="<?= $floor_key ?>_mini_truck" value="0" min="0"
                                            class="w-full px-2 py-1 border border-gray-300 rounded-md text-sm edit-floor-capacity" disabled>
                                 </div>
                             </div>
                         </div>
-
-                        <!-- 2nd Floor -->
-                        <div class="floor-section mb-4 p-3 border rounded-md">
-                            <div class="flex items-center mb-2">
-                                <input type="checkbox" name="second_floor" id="edit_second_floor"
-                                       class="rounded border-gray-300 text-red-600 focus:ring-red-500 mr-2">
-                                <label for="edit_second_floor" class="font-medium text-gray-700">2nd Floor</label>
-                            </div>
-                            <div class="grid grid-cols-3 gap-2 ml-4">
-                                <div>
-                                    <label class="block text-xs text-gray-600 mb-1">Additional Car Slots</label>
-                                    <input type="number" name="second_car" value="0" min="0" 
-                                           class="w-full px-2 py-1 border border-gray-300 rounded-md text-sm edit-floor-capacity" disabled>
-                                </div>
-                                <div>
-                                    <label class="block text-xs text-gray-600 mb-1">Additional Motorcycle Slots</label>
-                                    <input type="number" name="second_motorcycle" value="0" min="0"
-                                           class="w-full px-2 py-1 border border-gray-300 rounded-md text-sm edit-floor-capacity" disabled>
-                                </div>
-                                <div>
-                                    <label class="block text-xs text-gray-600 mb-1">Additional Mini Truck Slots</label>
-                                    <input type="number" name="second_mini_truck" value="0" min="0"
-                                           class="w-full px-2 py-1 border border-gray-300 rounded-md text-sm edit-floor-capacity" disabled>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- 3rd Floor -->
-                        <div class="floor-section mb-4 p-3 border rounded-md">
-                            <div class="flex items-center mb-2">
-                                <input type="checkbox" name="third_floor" id="edit_third_floor"
-                                       class="rounded border-gray-300 text-red-600 focus:ring-red-500 mr-2">
-                                <label for="edit_third_floor" class="font-medium text-gray-700">3rd Floor</label>
-                            </div>
-                            <div class="grid grid-cols-3 gap-2 ml-4">
-                                <div>
-                                    <label class="block text-xs text-gray-600 mb-1">Additional Car Slots</label>
-                                    <input type="number" name="third_car" value="0" min="0" 
-                                           class="w-full px-2 py-1 border border-gray-300 rounded-md text-sm edit-floor-capacity" disabled>
-                                </div>
-                                <div>
-                                    <label class="block text-xs text-gray-600 mb-1">Additional Motorcycle Slots</label>
-                                    <input type="number" name="third_motorcycle" value="0" min="0"
-                                           class="w-full px-2 py-1 border border-gray-300 rounded-md text-sm edit-floor-capacity" disabled>
-                                </div>
-                                <div>
-                                    <label class="block text-xs text-gray-600 mb-1">Additional Mini Truck Slots</label>
-                                    <input type="number" name="third_mini_truck" value="0" min="0"
-                                           class="w-full px-2 py-1 border border-gray-300 rounded-md text-sm edit-floor-capacity" disabled>
-                                </div>
-                            </div>
-                        </div>
+                        <?php endif; endforeach; ?>
                     </div>
 
                     <!-- Additional Spaces Summary -->
@@ -409,7 +215,7 @@ if ($is_ajax_request) {
                         class="px-6 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400 transition-colors">
                     Cancel
                 </button>
-                <button type="submit"
+                <button type="submit" id="editSubmitBtn"
                         class="px-6 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors">
                     <i class="fas fa-save mr-2"></i>Update Parking Space
                 </button>
@@ -423,29 +229,44 @@ if ($is_ajax_request) {
     </div>
 </div>
 
+<!-- Leaflet CSS -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<!-- Leaflet JavaScript -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
 <script>
 // Map variables for edit modal
 let edit_map;
 let edit_marker;
+let isEditFormSubmitting = false;
 
 // Function to show the modal
 function showEditParkingModal(parkingId) {
-    // Load modal content via AJAX with ajax parameter
-    fetch(`edit_parking_modal.php?parking_id=${parkingId}&ajax=1`)
+    // Close any existing modal first
+    closeEditParkingModal();
+    
+    // Load modal content via AJAX
+    fetch(`edit_parking_modal.php?parking_id=${parkingId}`)
         .then(response => response.text())
         .then(html => {
-            // Create modal container if it doesn't exist
-            let modalContainer = document.getElementById('editParkingModalContainer');
-            if (!modalContainer) {
-                modalContainer = document.createElement('div');
-                modalContainer.id = 'editParkingModalContainer';
-                document.body.appendChild(modalContainer);
+            // Remove any existing modal container
+            const existingContainer = document.getElementById('editParkingModalContainer');
+            if (existingContainer) {
+                existingContainer.remove();
             }
+            
+            // Create new modal container
+            const modalContainer = document.createElement('div');
+            modalContainer.id = 'editParkingModalContainer';
+            document.body.appendChild(modalContainer);
             modalContainer.innerHTML = html;
             
             // Show modal
             document.getElementById('editParkingModal').classList.remove('hidden');
             setTimeout(initializeEditMap, 100);
+            
+            // Initialize events
+            setTimeout(initEditModalEvents, 200);
         })
         .catch(error => {
             console.error('Error loading edit modal:', error);
@@ -459,11 +280,20 @@ function closeEditParkingModal() {
     if (editModal) {
         editModal.classList.add('hidden');
     }
+    
+    // Remove modal container completely
+    const modalContainer = document.getElementById('editParkingModalContainer');
+    if (modalContainer) {
+        modalContainer.remove();
+    }
+    
     if (edit_map) {
         edit_map.remove();
         edit_map = null;
         edit_marker = null;
     }
+    
+    isEditFormSubmitting = false;
 }
 
 // Initialize map for edit modal
@@ -475,6 +305,11 @@ function initializeEditMap() {
     
     const latitude = parseFloat(editLatitude.value) || 14.14870000;
     const longitude = parseFloat(editLongitude.value) || 121.31580000;
+    
+    // Remove existing map if any
+    if (edit_map) {
+        edit_map.remove();
+    }
     
     edit_map = L.map('edit_map').setView([latitude, longitude], 15);
     
@@ -609,24 +444,6 @@ function toggleEditFloorInputs(floor) {
     }
 }
 
-// Update marker from inputs for edit modal
-function updateEditMarkerFromInputs() {
-    if (!edit_map || !edit_marker) return;
-    
-    const editLatitude = document.getElementById('edit_latitude');
-    const editLongitude = document.getElementById('edit_longitude');
-    
-    if (!editLatitude || !editLongitude) return;
-    
-    const lat = parseFloat(editLatitude.value);
-    const lng = parseFloat(editLongitude.value);
-    
-    if (!isNaN(lat) && !isNaN(lng)) {
-        edit_marker.setLatLng([lat, lng]);
-        edit_map.setView([lat, lng]);
-    }
-}
-
 // Initialize event listeners for edit modal
 function initEditModalEvents() {
     // Floor checkbox event listeners
@@ -652,36 +469,52 @@ function initEditModalEvents() {
     
     // Initialize
     calculateAdditionalSpaces();
-    toggleEditFloorInputs('ground');
-    toggleEditFloorInputs('second');
-    toggleEditFloorInputs('third');
+    
+    // Initialize only existing floors
+    const floors = ['ground', 'second', 'third'];
+    floors.forEach(floor => {
+        toggleEditFloorInputs(floor);
+    });
     
     // Initialize image preview
     initEditImagePreview();
+    
+    // Form submission handler
+    const editForm = document.getElementById('editParkingForm');
+    if (editForm) {
+        editForm.addEventListener('submit', function(e) {
+            if (isEditFormSubmitting) {
+                e.preventDefault();
+                return;
+            }
+            
+            const submitBtn = document.getElementById('editSubmitBtn');
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Updating...';
+            }
+            
+            isEditFormSubmitting = true;
+            
+            // Allow form to submit normally
+        });
+    }
 }
 
-// Close modal when clicking outside
-document.addEventListener('click', function(e) {
-    const editModal = document.getElementById('editParkingModal');
-    if (editModal && e.target === editModal) {
-        closeEditParkingModal();
+function updateEditMarkerFromInputs() {
+    if (!edit_map || !edit_marker) return;
+    
+    const editLatitude = document.getElementById('edit_latitude');
+    const editLongitude = document.getElementById('edit_longitude');
+    
+    if (!editLatitude || !editLongitude) return;
+    
+    const lat = parseFloat(editLatitude.value);
+    const lng = parseFloat(editLongitude.value);
+    
+    if (!isNaN(lat) && !isNaN(lng)) {
+        edit_marker.setLatLng([lat, lng]);
+        edit_map.setView([lat, lng]);
     }
-});
-
-// Re-initialize events when modal is shown
-document.addEventListener('DOMContentLoaded', function() {
-    const editModal = document.getElementById('editParkingModal');
-    if (editModal) {
-        const observer = new MutationObserver(function(mutations) {
-            mutations.forEach(function(mutation) {
-                if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
-                    if (!editModal.classList.contains('hidden')) {
-                        setTimeout(initEditModalEvents, 100);
-                    }
-                }
-            });
-        });
-        observer.observe(editModal, { attributes: true });
-    }
-});
+}
 </script>

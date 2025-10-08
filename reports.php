@@ -38,6 +38,41 @@ try {
     $error = "Error fetching user data: " . $e->getMessage();
 }
 
+// Fetch feedbacks based on filter
+try {
+    $feedback_filter = isset($_GET['feedback_filter']) ? $_GET['feedback_filter'] : $filter;
+    
+    switch($feedback_filter) {
+        case 'daily':
+            $feedback_start_date = date('Y-m-d 00:00:00');
+            $feedback_end_date = date('Y-m-d 23:59:59');
+            break;
+        case 'weekly':
+            $feedback_start_date = date('Y-m-d 00:00:00', strtotime('monday this week'));
+            $feedback_end_date = date('Y-m-d 23:59:59', strtotime('sunday this week'));
+            break;
+        case 'monthly':
+        default:
+            $feedback_start_date = date('Y-m-01 00:00:00');
+            $feedback_end_date = date('Y-m-t 23:59:59');
+            break;
+    }
+    
+    $stmt = $pdo->prepare("
+        SELECT f.*, u.first_name, u.last_name, u.username, ps.name as parking_space_name
+        FROM feedback f
+        JOIN users u ON f.user_id = u.id
+        JOIN parking_spaces ps ON f.parking_space_id = ps.id
+        WHERE f.created_at BETWEEN ? AND ?
+        ORDER BY f.created_at DESC
+    ");
+    $stmt->execute([$feedback_start_date, $feedback_end_date]);
+    $feedbacks = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch(PDOException $e) {
+    $feedbacks = [];
+    $feedback_error = "Error fetching feedback data: " . $e->getMessage();
+}
+
 ?>
 
 <!DOCTYPE html>
@@ -133,11 +168,14 @@ try {
                 <div class="bg-white rounded-xl shadow-md p-4">
                     <div class="flex justify-between items-center mb-3">
                         <h2 class="font-semibold text-lg text-[#3B060A]">Feedbacks</h2>
-                        <select class="bg-[#FDF7D8] rounded-md px-2 py-1 text-sm">
-                            <option>Monthly</option>
-                            <option>Weekly</option>
-                            <option>Daily</option>
-                        </select>
+                        <form method="GET" class="m-0">
+                            <input type="hidden" name="filter" value="<?php echo $filter; ?>">
+                            <select name="feedback_filter" onchange="this.form.submit()" class="bg-[#FDF7D8] rounded-md px-2 py-1 text-sm">
+                                <option value="daily" <?php echo (isset($_GET['feedback_filter']) ? $_GET['feedback_filter'] : $filter) == 'daily' ? 'selected' : ''; ?>>Daily</option>
+                                <option value="weekly" <?php echo (isset($_GET['feedback_filter']) ? $_GET['feedback_filter'] : $filter) == 'weekly' ? 'selected' : ''; ?>>Weekly</option>
+                                <option value="monthly" <?php echo (isset($_GET['feedback_filter']) ? $_GET['feedback_filter'] : $filter) == 'monthly' ? 'selected' : ''; ?>>Monthly</option>
+                            </select>
+                        </form>
                     </div>
                     <div class="overflow-x-auto">
                         <table class="w-full table-fixed text-sm text-left">
@@ -145,20 +183,46 @@ try {
                                 <tr>
                                     <th class="px-3 py-2 w-12">No.</th>
                                     <th class="px-3 py-2 w-40">Name</th>
+                                    <th class="px-3 py-2 w-48">Parking Space</th>
                                     <th class="px-3 py-2 w-64">Messages</th>
+                                    <th class="px-3 py-2 w-20">Rating</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr class="border-b">
-                                    <td class="px-3 py-2">1.</td>
-                                    <td class="px-3 py-2">Juan Dela Cruz</td>
-                                    <td class="px-3 py-2">Maganda!</td>
-                                </tr>
-                                <tr class="border-b">
-                                    <td class="px-3 py-2">2.</td>
-                                    <td class="px-3 py-2">Juan Dela Cruz</td>
-                                    <td class="px-3 py-2">Good UI</td>
-                                </tr>
+                                <?php if (!empty($feedbacks)): ?>
+                                    <?php $counter = 1; ?>
+                                    <?php foreach ($feedbacks as $feedback): ?>
+                                        <tr class="border-b">
+                                            <td class="px-3 py-2"><?php echo $counter++; ?>.</td>
+                                            <td class="px-3 py-2">
+                                                <?php 
+                                                $full_name = trim($feedback['first_name'] . ' ' . $feedback['last_name']);
+                                                echo !empty($full_name) ? htmlspecialchars($full_name) : htmlspecialchars($feedback['username']);
+                                                ?>
+                                            </td>
+                                            <td class="px-3 py-2"><?php echo htmlspecialchars($feedback['parking_space_name']); ?></td>
+                                            <td class="px-3 py-2"><?php echo htmlspecialchars($feedback['message']); ?></td>
+                                            <td class="px-3 py-2">
+                                                <?php if ($feedback['rating']): ?>
+                                                    <div class="flex items-center">
+                                                        <?php for ($i = 1; $i <= 5; $i++): ?>
+                                                            <i class="fas fa-star <?php echo $i <= $feedback['rating'] ? 'text-yellow-400' : 'text-gray-300'; ?> text-sm"></i>
+                                                        <?php endfor; ?>
+                                                        <span class="ml-1 text-xs">(<?php echo $feedback['rating']; ?>)</span>
+                                                    </div>
+                                                <?php else: ?>
+                                                    <span class="text-gray-400 text-xs">No rating</span>
+                                                <?php endif; ?>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                <?php else: ?>
+                                    <tr>
+                                        <td colspan="5" class="px-3 py-4 text-center text-gray-500">
+                                            No feedbacks found for the selected period.
+                                        </td>
+                                    </tr>
+                                <?php endif; ?>
                             </tbody>
                         </table>
                     </div>

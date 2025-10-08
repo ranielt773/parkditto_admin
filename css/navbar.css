@@ -160,3 +160,23 @@ body {
     justify-content: flex-end;
   }
 }
+
+.state-active {
+  background-color: #d1fae5;
+  color: #065f46;
+}
+
+.state-pending {
+  background-color: #fef3c7;
+  color: #92400e;
+}
+
+.state-block {
+  background-color: #fee2e2;
+  color: #991b1b;
+}
+
+.state-inactive {
+  background-color: #e5e7eb;
+  color: #374151;
+}

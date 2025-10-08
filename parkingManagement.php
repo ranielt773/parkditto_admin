@@ -2,7 +2,8 @@
 include "includes/config.php";
 
 // Function to check and update expired transactions
-function updateExpiredTransactions($pdo) {
+function updateExpiredTransactions($pdo)
+{
     try {
         // Get all ongoing transactions that have expired
         $current_time = date('Y-m-d H:i:s');
@@ -31,7 +32,7 @@ function updateExpiredTransactions($pdo) {
 
             if ($parking_space) {
                 $occupied_slots = json_decode($parking_space['occupied_slots'], true);
-                
+
                 // Remove the slot from occupied slots
                 if (isset($occupied_slots[$transaction['vehicle_type']][$transaction['floor']])) {
                     $key = array_search($transaction['lot_number'], $occupied_slots[$transaction['vehicle_type']][$transaction['floor']]);
@@ -81,7 +82,15 @@ try {
 
     // Get all parking spaces for dropdown
     $spaces = $pdo->query("SELECT id, name FROM parking_spaces")->fetchAll(PDO::FETCH_ASSOC);
+    // ✅ Get selected parking space name
 
+    $selectedParkingName = '';
+    foreach ($spaces as $space) {
+        if ($space['id'] == $selectedParking) {
+            $selectedParkingName = $space['name'];
+            break;
+        }
+    }
     // Get selected parking space details
     $parking_stmt = $pdo->prepare("SELECT * FROM parking_spaces WHERE id = ?");
     $parking_stmt->execute([$selectedParking]);
@@ -110,6 +119,7 @@ try {
     $transactions_stmt->execute([$selectedParking]);
     $transactions = $transactions_stmt->fetchAll(PDO::FETCH_ASSOC);
 
+    // Create transaction lookup array for quick access
     // Create transaction lookup array for quick access
     $transaction_lookup = [];
     foreach ($transactions as $transaction) {
@@ -169,6 +179,7 @@ try {
 
 // Helper function to calculate remaining time
 // Helper function to calculate remaining time
+// Helper function to calculate remaining time
 function calculateRemainingTime($expiry_time, $transaction_status)
 {
     if (!$expiry_time || $transaction_status === 'completed') {
@@ -183,7 +194,31 @@ function calculateRemainingTime($expiry_time, $transaction_status)
     }
 
     $interval = $now->diff($expiry);
-    return $interval->format('%hh %im');
+
+    // Format based on the time difference
+    if ($interval->days > 0) {
+        // Show days if more than 1 day remaining
+        if ($interval->days >= 30) {
+            $months = floor($interval->days / 30);
+            $remainingDays = $interval->days % 30;
+            if ($remainingDays > 0) {
+                return $months . 'm ' . $remainingDays . 'd';
+            }
+            return $months . 'm';
+        } elseif ($interval->days >= 7) {
+            $weeks = floor($interval->days / 7);
+            $remainingDays = $interval->days % 7;
+            if ($remainingDays > 0) {
+                return $weeks . 'w ' . $remainingDays . 'd';
+            }
+            return $weeks . 'w';
+        } else {
+            return $interval->days . 'd ' . $interval->h . 'h';
+        }
+    } else {
+        // Show hours and minutes if less than 1 day
+        return $interval->h . 'h ' . $interval->i . 'm';
+    }
 }
 ?>
 <!DOCTYPE html>
@@ -262,8 +297,9 @@ function calculateRemainingTime($expiry_time, $transaction_status)
                         <?php endforeach; ?>
                     </select>
 
+                    <!-- In the buttons section of parkingManagement.php -->
                     <div class="flex flex-wrap gap-2 mt-2 md:mt-0">
-                        <button onclick="showDeleteParkingModal(<?= $space['id'] ?>)"
+                        <button onclick="showDeleteParkingModal(<?= $selectedParking ?>)"
                             class="px-3 py-2 bg-red-600 text-white rounded-lg text-sm hover:bg-red-700 transition-colors">
                             Delete
                         </button>
@@ -271,9 +307,10 @@ function calculateRemainingTime($expiry_time, $transaction_status)
                             class="px-3 py-2 bg-green-600 text-white rounded-lg text-sm hover:bg-green-700 transition-colors">
                             <i class="fas fa-plus mr-1"></i>Add Parking
                         </button>
-                        <button
-                            class="px-3 py-2 bg-green-600 text-white rounded-lg text-sm hover:bg-green-700 transition-colors">Add
-                            Slot</button>
+                        <button onclick="showEditParkingModal(<?= $selectedParking ?>)"
+                            class="px-3 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 transition-colors">
+                            <i class="fas fa-edit mr-1"></i>Edit Parking Space
+                        </button>
                     </div>
                 </div>
             </div>
@@ -345,8 +382,17 @@ function calculateRemainingTime($expiry_time, $transaction_status)
                                     $vehicleIcon = "fa-motorcycle";
                                 if ($row['vehicle_type'] == "Mini Truck")
                                     $vehicleIcon = "fa-truck";
+
+                                // Get transaction ID if exists
+                                $transaction_id = 0;
+                                if ($row['state'] !== 'available') {
+                                    $key = $row['vehicle_type'] . '_' . $row['floor'] . '_' . $row['slot_number'];
+                                    $transaction = $transaction_lookup[$key] ?? null;
+                                    $transaction_id = $transaction['id'] ?? 0;
+                                }
                                 ?>
-                                <tr class="hover:bg-gray-50">
+                                <tr class="hover:bg-gray-50" data-transaction-id="<?= $transaction_id ?>"
+                                    data-parking-id="<?= $selectedParking ?>">
                                     <td class="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-700"
                                         data-label="No."><?= $i++ ?></td>
                                     <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-700" data-label="Name">
@@ -376,15 +422,16 @@ function calculateRemainingTime($expiry_time, $transaction_status)
                                     </td>
                                     <td class="px-4 py-3 whitespace-nowrap text-sm font-medium" data-label="Actions">
                                         <div class="flex space-x-2">
-                                            <button class="text-blue-600 hover:text-blue-900">
+                                            <button class="text-blue-600 hover:text-blue-900"
+                                                onclick='openViewModal(<?= json_encode($row) ?>, <?= $transaction_id ?>)'>
                                                 <i class="fa fa-eye"></i>
                                             </button>
-                                            <button class="text-yellow-600 hover:text-yellow-900">
-                                                <i class="fa fa-pen"></i>
-                                            </button>
-                                            <button class="text-red-600 hover:text-red-900">
-                                                <i class="fa fa-trash"></i>
-                                            </button>
+                                            <?php if ($row['state'] !== 'available'): ?>
+                                                <button class="text-yellow-600 hover:text-yellow-900"
+                                                    onclick='openEditModal(<?= json_encode($row) ?>, <?= $transaction_id ?>)'>
+                                                    <i class="fa fa-pen"></i>
+                                                </button>
+                                            <?php endif; ?>
                                         </div>
                                     </td>
                                 </tr>
@@ -420,6 +467,7 @@ function calculateRemainingTime($expiry_time, $transaction_status)
                     <i class="fas fa-chevron-right text-gray-700"></i>
                 </a>
             </div>
+
 
         </div>
     </div>
@@ -541,7 +589,9 @@ function calculateRemainingTime($expiry_time, $transaction_status)
 
     </script>
     <?php include 'add_parking_modal.php';
-    include 'delete_parking_modal.php'; ?>
+    include 'delete_parking_modal.php';
+    include "viewParkingManagement_modal.php";
+    include "edit_parking_modal.php"; ?>
 </body>
 
 </html>

@@ -1,21 +1,38 @@
 <?php
 include 'includes/auth.php';
 
+// Auto-update expired transactions to completed
+try {
+    $update_stmt = $pdo->prepare("
+        UPDATE transactions 
+        SET status = 'completed' 
+        WHERE expiry_time <= NOW() 
+        AND status = 'ongoing'
+    ");
+    $update_stmt->execute();
+} catch (PDOException $e) {
+    // Log error but don't stop execution
+    error_log("Error updating expired transactions: " . $e->getMessage());
+}
+
 // Fetch data from the database using PDO
 $sql = "SELECT 
             t.id, 
             u.username as name, 
-            CONCAT(
-                FLOOR(TIMESTAMPDIFF(SECOND, NOW(), t.expiry_time) / 86400), ':', 
-                FLOOR((TIMESTAMPDIFF(SECOND, NOW(), t.expiry_time) % 86400) / 3600), ':', 
-                FLOOR((TIMESTAMPDIFF(SECOND, NOW(), t.expiry_time) % 3600) / 60)
-            ) as remaining,
+            CASE 
+                WHEN t.expiry_time <= NOW() THEN '0:0:0'
+                ELSE CONCAT(
+                    FLOOR(TIMESTAMPDIFF(SECOND, NOW(), t.expiry_time) / 86400), ':', 
+                    FLOOR((TIMESTAMPDIFF(SECOND, NOW(), t.expiry_time) % 86400) / 3600), ':', 
+                    FLOOR((TIMESTAMPDIFF(SECOND, NOW(), t.expiry_time) % 3600) / 60)
+                )
+            END as remaining,
             t.storm_pass as storm,
             t.duration_type as plan,
             t.status as state
         FROM transactions t
         JOIN users u ON t.user_id = u.id
-        WHERE t.status IN ('ongoing', 'pending', 'completed', 'cancelled')
+        WHERE t.status IN ('ongoing', 'pending', 'completed', 'cancelled') 
         ORDER BY t.created_at DESC";
 
 $stmt = $pdo->query($sql);
@@ -68,7 +85,7 @@ $filter_status = isset($_GET['status']) ? $_GET['status'] : 'all';
     <div class="mobile-overlay" id="mobileOverlay"></div>
 
     <!-- Sidebar -->
-  <?php include "includes/navbar.php";?>
+    <?php include "includes/navbar.php"; ?>
 
     <!-- Main content -->
     <div class="ml-64 flex-1 overflow-auto transition-all duration-300" id="mainContent">
@@ -112,8 +129,8 @@ $filter_status = isset($_GET['status']) ? $_GET['status'] : 'all';
                 <a href="?status=pending" class="transform transition-transform hover:scale-105">
                     <div
                         class="bg-gradient-to-r from-orange-500 to-orange-700 text-white rounded-xl p-4 shadow-lg <?php echo $filter_status == 'pending' ? 'ring-2 ring-orange-400' : ''; ?>">
-                        <h5 class="text-sm font-medium mb-2">Storm Pass Users</h5>
-                        <p class="text-3xl font-bold"><?= $storm_count ?></p>
+                        <h5 class="text-sm font-medium mb-2">Pending</h5>
+                        <p class="text-3xl font-bold"><?= $count_pending ?></p>
                     </div>
                 </a>
             </div>
@@ -185,6 +202,14 @@ $filter_status = isset($_GET['status']) ? $_GET['status'] : 'all';
                                     $state_display = 'Completed';
                                     $state_class = 'state-inactive';
                                 }
+
+                                // Check if remaining time is 0 and status is ongoing
+                                $remaining_display = $row['remaining'];
+                                if ($row['remaining'] == '0:0:0' && $row['state'] == 'ongoing') {
+                                    $remaining_display = 'Expired';
+                                    $state_display = 'Expired';
+                                    $state_class = 'state-block';
+                                }
                                 ?>
                                 <tr class="hover:bg-gray-50" data-id="<?= $row['id'] ?>"
                                     data-name="<?= strtolower($row['name']) ?>" data-plan="<?= $row['plan'] ?>"
@@ -195,7 +220,7 @@ $filter_status = isset($_GET['status']) ? $_GET['status'] : 'all';
                                         <?= $row['name'] ?>
                                     </td>
                                     <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-700"
-                                        data-label="Remaining Time"><?= $row['remaining'] ?></td>
+                                        data-label="Remaining Time"><?= $remaining_display ?></td>
                                     <td class="px-4 py-3 whitespace-nowrap" data-label="Storm Pass">
                                         <span
                                             class="px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full <?= $row['storm'] == "Active" ? 'state-active' : 'state-inactive' ?>">
@@ -557,6 +582,31 @@ $filter_status = isset($_GET['status']) ? $_GET['status'] : 'all';
                     });
             }
         }
+        // Function to auto-update expired transactions
+        function autoUpdateExpiredTransactions() {
+            fetch('cron_job.php')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.updated > 0) {
+                        console.log(`Auto-updated ${data.updated} expired transactions`);
+                        // Reload the page to show updated status
+                        setTimeout(() => {
+                            window.location.reload();
+                        }, 2000);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error auto-updating transactions:', error);
+                });
+        }
+
+        // Check for expired transactions every 5 minutes
+        setInterval(autoUpdateExpiredTransactions, 300000); // 5 minutes
+
+        // Also check when page loads
+        document.addEventListener('DOMContentLoaded', function () {
+            autoUpdateExpiredTransactions();
+        });
     </script>
 </body>
 

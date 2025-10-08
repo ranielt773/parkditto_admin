@@ -55,12 +55,6 @@ try {
         $arrival_datetime = new DateTime($arrival_time);
         
         switch ($duration_type) {
-            case 'hourly':
-                $expiry_time = $arrival_datetime->modify("+{$duration_value} hours")->format('Y-m-d H:i:s');
-                break;
-            case 'daily':
-                $expiry_time = $arrival_datetime->modify("+{$duration_value} days")->format('Y-m-d H:i:s');
-                break;
             case 'weekly':
                 $expiry_time = $arrival_datetime->modify("+{$duration_value} weeks")->format('Y-m-d H:i:s');
                 break;
